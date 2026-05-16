@@ -9,72 +9,71 @@ Automated cancer cell detection and histopathological staging platform powered b
 ## Architecture
 
 ```
-                                    ┌─────────────────────┐
-                                    │   Gemini 2.5 Flash  │
-                                    │  (Visual Inference)  │
-                                    └─────────┬───────────┘
-                                              │ Structured JSON
-                                              ▼
-┌──────────────┐  Multipart POST  ┌───────────────────────┐  Logistic   ┌──────────┐
-│   Next.js    │ ───────────────▶ │    FastAPI Backend     │ Regression  │  SQLite  │
-│   Frontend   │ ◀─────────────── │  (Python 3.9+)        │ ──────────▶ │ Database │
-└──────┬───────┘  Diagnosis JSON  └───────────┬───────────┘             └──────────┘
-       │                                      │
-       │  /api/report/[id]                    │ /report/{id}/pdf
-       └──────────────────────────────────────┘
-                  PDF Report Download
+                                  ┌─────────────────────┐
+                                  │   Gemini 2.5 Flash   │
+                                  │  (Visual Inference)   │
+                                  └─────────┬─────────────┘
+                                            │ Structured JSON
+                                            ▼
+┌──────────────┐  Multipart POST  ┌─────────────────────┐             ┌──────────┐
+│   Next.js    │ ───────────────▶ │   FastAPI Backend    │ ──────────▶ │  SQLite  │
+│   Frontend   │ ◀─────────────── │   + Logistic Reg.    │             │ Database │
+└──────────────┘  Diagnosis JSON  └─────────┬─────────────┘             └──────────┘
+                                            │
+                                            ▼
+                                  ┌─────────────────────┐
+                                  │   HTML Report Page    │
+                                  │  (with math breakdown)│
+                                  └───────────────────────┘
 ```
 
 ## Features
 
-- **AI-Powered Diagnosis** — Upload any H&E stained histopathology slide and get a structured diagnostic readout in seconds
-- **Deterministic Confidence** — Uses a Logistic Regression model (not the LLM's guess) to calculate malignancy probability from three biomarkers
-- **Clinical Risk Labels** — Maps confidence to medical terms: *Definitive Malignancy*, *Highly Suspicious*, *Suspicious*, *Borderline Cancerous*, *Atypical / Precancerous*, *Benign / Normal*
-- **Plain English Summary** — Non-medical readers get a simple, jargon-free explanation of what each biomarker means
-- **Report History** — Every diagnosis is saved to a local SQLite database with the original image
-- **PDF Report Export** — Download a professional clinical-grade PDF report with embedded image, biomarker table, case analysis, and disclaimer
-- **Automated Data Scraping** — `icrawler`-based script to gather training images for three categories
+- **AI-Powered Diagnosis** — Upload any H&E stained histopathology slide and receive a structured diagnostic readout in seconds. Works with any tissue type or condition — not limited to specific diseases.
+- **Deterministic Confidence** — Uses a Logistic Regression model (not the LLM's guess) to calculate malignancy probability from three biomarkers.
+- **Clinical Risk Labels** — Maps confidence to medical terms: *Definitive Malignancy*, *Highly Suspicious*, *Suspicious*, *Borderline Cancerous*, *Atypical / Precancerous*, *Benign / Normal*.
+- **Mathematical Reasoning** — Every report includes a full step-by-step breakdown of the logistic regression calculation (z-score, sigmoid function, final probability).
+- **Plain English Summary** — Non-medical readers get a jargon-free explanation of what each biomarker means.
+- **Report History** — Every diagnosis is saved to a local SQLite database with the original image.
+- **HTML Report Export** — View a professional clinical-grade report in a new tab with embedded image, biomarker table, math reasoning, case analysis, and disclaimer. Save as PDF via the browser's print dialog.
+- **Automated Data Scraping** — `icrawler`-based script to gather proof-of-concept training images.
 
 ## Repository Structure
 
 ```
 OncoVision/
 ├── backend/
-│   ├── main.py                    # FastAPI — /predict, /history, /report/{id}/pdf
-│   ├── database.py                # SQLAlchemy ORM + SQLite persistence
-│   ├── report.py                  # ReportLab PDF report generator
-│   ├── scrape_training_images.py  # icrawler image scraper (3 categories)
-│   ├── requirements.txt           # Python dependencies
-│   ├── .env.example               # Environment variable template
-│   └── data/                      # SQLite DB + uploaded images (gitignored)
+│   ├── main.py                     # FastAPI — /predict, /history, /report/{id}/html
+│   ├── database.py                 # SQLAlchemy ORM + SQLite persistence
+│   ├── report.py                   # ReportLab PDF generator (legacy)
+│   ├── scrape_training_images.py   # icrawler image scraper (3 categories)
+│   ├── requirements.txt            # Python dependencies
+│   ├── .env.example                # Environment variable template
+│   └── data/                       # SQLite DB + uploaded images (gitignored)
+│
 ├── frontend/
-│   ├── src/
-│   │   └── app/
-│   │       ├── page.tsx           # Diagnostic Dashboard (upload, results, history, PDF)
-│   │       ├── globals.css        # Design system — minimalist tokens & animations
-│   │       ├── layout.tsx         # Root layout with Geist fonts + SEO
-│   │       └── api/
-│   │           └── report/
-│   │               └── [id]/
-│   │                   └── route.ts  # Next.js API proxy for PDF downloads
+│   ├── src/app/
+│   │   ├── page.tsx                # Diagnostic Dashboard (upload, results, history)
+│   │   ├── globals.css             # Design system — minimalist tokens & animations
+│   │   └── layout.tsx              # Root layout with Geist fonts + SEO
 │   ├── package.json
 │   └── tsconfig.json
+│
 ├── .gitignore
 └── README.md
 ```
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 16 (App Router), React 19, TypeScript |
-| Styling | Tailwind CSS 4 |
-| Backend | FastAPI (Python 3.9+) |
-| AI Engine | Google GenAI SDK — Gemini 2.5 Flash |
-| Database | SQLAlchemy + SQLite |
-| PDF Generation | ReportLab |
-| Data Scraping | icrawler (Bing source) |
-| Confidence Model | Logistic Regression (log-odds) |
+| Layer            | Technology                                  |
+| ---------------- | ------------------------------------------- |
+| Frontend         | Next.js 16 (App Router), React 19, TypeScript |
+| Styling          | Tailwind CSS 4                              |
+| Backend          | FastAPI (Python 3.9+)                       |
+| AI Engine        | Google GenAI SDK — Gemini 2.5 Flash         |
+| Database         | SQLAlchemy + SQLite                         |
+| Confidence Model | Logistic Regression (log-odds)              |
+| Data Scraping    | icrawler (Bing source)                      |
 
 ## Confidence Calculation
 
@@ -83,19 +82,19 @@ Instead of relying on the LLM to hallucinate a confidence score, we use a **Logi
 ```
 P(Malignant) = 1 / (1 + e^(-z))
 
-where z = -3.0 (baseline)
-        + 3.0  (if N:C Ratio is High)
-        + 2.0  (if Pleomorphism is Observed)
-        + 2.0  (if Hyperchromasia is Detected)
+where z = -3.0  (baseline risk)
+        + 3.0   (if N:C Ratio is High)
+        + 2.0   (if Pleomorphism is Observed)
+        + 2.0   (if Hyperchromasia is Detected)
 ```
 
-| Abnormal Markers | z | Confidence | Risk Label |
-|---|---|---|---|
-| 0 of 3 | -3.0 | 95.3% Benign | Benign / Normal |
+| Markers Abnormal | z    | Confidence  | Risk Label              |
+| ---------------- | ---- | ----------- | ----------------------- |
+| 0 of 3           | -3.0 | 95.3% Benign | Benign / Normal         |
 | 1 of 3 (secondary) | -1.0 | 73.1% Benign | Atypical / Precancerous |
-| 1 of 3 (N:C Ratio) | 0.0 | 50.0% | Borderline Cancerous |
-| 2 of 3 | 1.0–2.0 | 73.1–88.0% | Suspicious / Highly Suspicious |
-| 3 of 3 | 4.0 | 98.2% | Definitive Malignancy |
+| 1 of 3 (N:C Ratio) | 0.0  | 50.0%       | Borderline Cancerous    |
+| 2 of 3           | 1.0–2.0 | 73.1–88.0% | Suspicious / Highly Suspicious |
+| 3 of 3           | 4.0  | 98.2%       | Definitive Malignancy   |
 
 ## Setup
 
@@ -137,11 +136,13 @@ Downloads ~20 H&E histology images per category into `backend/training_data/`.
 ## API Endpoints
 
 ### `POST /predict`
+
 Upload a biopsy image for AI analysis. Returns structured diagnosis with deterministic confidence.
 
-**Request:** Multipart form with `file` field (JPEG/PNG/WebP/TIFF).
+**Request:** Multipart form with `file` field (JPEG / PNG / WebP / TIFF).
 
 **Response:**
+
 ```json
 {
   "id": "a22759ae-d627-476f-996e-10cf1e941207",
@@ -167,10 +168,12 @@ Upload a biopsy image for AI analysis. Returns structured diagnosis with determi
 ```
 
 ### `GET /history`
+
 Returns the most recent 50 diagnostic records (newest first).
 
-### `GET /report/{id}/pdf`
-Generates and downloads a clinical PDF report for a given diagnosis record.
+### `GET /report/{id}/html`
+
+Generates a styled HTML diagnostic report with embedded biopsy image, classification, biomarker table, step-by-step mathematical reasoning, and full case analysis.
 
 ## License
 
