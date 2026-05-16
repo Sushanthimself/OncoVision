@@ -138,6 +138,21 @@ export default function DiagnosticDashboard() {
 
   const isMalignant = diagnosis ? detectMalignancy(diagnosis) : false;
 
+  const getRiskLabel = (conf: number, isMal: boolean): string => {
+    if (!isMal) {
+      // If it's benign but confidence is lower than 95%, it means at least 1 marker
+      // was abnormal. This indicates potential for future cancer.
+      if (conf >= 95) return "Benign / Normal";
+      return "Atypical / Precancerous"; 
+    }
+    if (conf >= 98) return "Definitive Malignancy";
+    if (conf >= 88) return "Highly Suspicious";
+    if (conf >= 73) return "Suspicious";
+    return "Borderline Cancerous";
+  };
+
+  const riskLabel = diagnosis ? getRiskLabel(confidencePct, isMalignant) : "";
+
   /* layman summary --------------------------------------------------------- */
   const getLaymanSummary = (d: DiagnosisResult): { headline: string; bullets: string[] } => {
     const isMal = detectMalignancy(d);
@@ -433,9 +448,14 @@ export default function DiagnosticDashboard() {
               <div className="flex flex-col gap-6 animate-fade-in-up">
                 {/* Prediction card */}
                 <div className="bg-white border border-zinc-200 p-6" id="result-prediction">
-                  <p className="text-[11px] text-zinc-400 uppercase tracking-[0.2em] mb-3">
-                    Classification
-                  </p>
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-[11px] text-zinc-400 uppercase tracking-[0.2em]">
+                      Classification
+                    </p>
+                    <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 border ${isMalignant ? 'border-black text-black bg-zinc-50' : 'border-zinc-200 text-zinc-500'}`}>
+                      {riskLabel}
+                    </span>
+                  </div>
                   <div className="flex items-end justify-between">
                     <div className="flex items-center gap-3">
                       <div
