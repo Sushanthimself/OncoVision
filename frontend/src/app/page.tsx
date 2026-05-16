@@ -180,21 +180,10 @@ export default function DiagnosticDashboard() {
   const riskLabel = diagnosis?.risk_label ?? (diagnosis ? getRiskLabel(confidencePct, isMalignant) : "");
 
   /* PDF download ---------------------------------------------------------- */
-  const downloadPdf = useCallback(async () => {
-    if (!diagnosis?.id) return;
-    try {
-      const res = await fetch(`${API_URL}/report/${diagnosis.id}/pdf`);
-      if (!res.ok) throw new Error("PDF generation failed");
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `OncoVision_Report_${diagnosis.id.slice(0, 8)}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "PDF download failed.");
-    }
+  const downloadPdf = useCallback((reportId?: string) => {
+    const id = reportId || diagnosis?.id;
+    if (!id) return;
+    window.open(`/api/report/${id}`, "_blank");
   }, [diagnosis]);
 
   /* layman summary --------------------------------------------------------- */
@@ -295,12 +284,12 @@ export default function DiagnosticDashboard() {
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] text-zinc-400">{new Date(h.created_at).toLocaleString()}</span>
-                      <a
-                        href={`${API_URL}/report/${h.id}/pdf`}
-                        className="text-[10px] text-black font-medium underline underline-offset-2 hover:text-zinc-600"
+                      <button
+                        onClick={() => downloadPdf(h.id)}
+                        className="text-[10px] text-black font-medium underline underline-offset-2 hover:text-zinc-600 bg-transparent border-none cursor-pointer p-0"
                       >
                         PDF
-                      </a>
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -700,7 +689,7 @@ export default function DiagnosticDashboard() {
                 {/* Download PDF button */}
                 {diagnosis?.id && (
                   <button
-                    onClick={downloadPdf}
+                    onClick={() => downloadPdf()}
                     className="w-full py-3 text-xs font-semibold uppercase tracking-[0.2em] bg-black text-white hover:bg-zinc-900 active:scale-[0.99] transition-all duration-200 flex items-center justify-center gap-2"
                     id="btn-download-pdf"
                   >

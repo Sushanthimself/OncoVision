@@ -23,8 +23,10 @@ from reportlab.platypus import (
     HRFlowable,
 )
 
+from typing import Optional
 
-def generate_pdf_report(record_dict: dict, image_path: str | None = None) -> bytes:
+
+def generate_pdf_report(record_dict: dict, image_path: Optional[str] = None) -> bytes:
     """
     Generate a clinical-grade PDF report from a diagnosis record dictionary.
 
