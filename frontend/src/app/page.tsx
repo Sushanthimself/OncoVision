@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 
 /* ─────────────────────────────────────────────────────────────────────────────
    TYPE DEFINITIONS
@@ -26,10 +26,21 @@ interface CaseAnalysis {
 }
 
 interface DiagnosisResult {
+  id?: string;
   prediction: string;
   confidence: number;
+  risk_label?: string;
   biological_indicators: BiologicalIndicators;
   case_analysis: CaseAnalysis;
+}
+
+interface HistoryRecord {
+  id: string;
+  created_at: string;
+  filename: string;
+  prediction: string;
+  confidence: number;
+  risk_label: string;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -50,8 +61,23 @@ export default function DiagnosticDashboard() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState<HistoryRecord[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /* fetch history --------------------------------------------------------- */
+  const fetchHistory = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/history`);
+      if (res.ok) {
+        const data = await res.json();
+        setHistory(data);
+      }
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
   /* handlers --------------------------------------------------------------- */
 
@@ -112,6 +138,7 @@ export default function DiagnosticDashboard() {
 
       const data: DiagnosisResult = await res.json();
       setDiagnosis(data);
+      fetchHistory(); // Refresh history after new diagnosis
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "An unexpected error occurred.");
     } finally {
@@ -140,8 +167,6 @@ export default function DiagnosticDashboard() {
 
   const getRiskLabel = (conf: number, isMal: boolean): string => {
     if (!isMal) {
-      // If it's benign but confidence is lower than 95%, it means at least 1 marker
-      // was abnormal. This indicates potential for future cancer.
       if (conf >= 95) return "Benign / Normal";
       return "Atypical / Precancerous"; 
     }
@@ -151,7 +176,26 @@ export default function DiagnosticDashboard() {
     return "Borderline Cancerous";
   };
 
-  const riskLabel = diagnosis ? getRiskLabel(confidencePct, isMalignant) : "";
+  // Use server-side risk_label if available, else compute locally
+  const riskLabel = diagnosis?.risk_label ?? (diagnosis ? getRiskLabel(confidencePct, isMalignant) : "");
+
+  /* PDF download ---------------------------------------------------------- */
+  const downloadPdf = useCallback(async () => {
+    if (!diagnosis?.id) return;
+    try {
+      const res = await fetch(`${API_URL}/report/${diagnosis.id}/pdf`);
+      if (!res.ok) throw new Error("PDF generation failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `OncoVision_Report_${diagnosis.id.slice(0, 8)}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "PDF download failed.");
+    }
+  }, [diagnosis]);
 
   /* layman summary --------------------------------------------------------- */
   const getLaymanSummary = (d: DiagnosisResult): { headline: string; bullets: string[] } => {
@@ -197,33 +241,26 @@ export default function DiagnosticDashboard() {
         <div className="mx-auto max-w-6xl flex items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 bg-black flex items-center justify-center">
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="white"
-                strokeWidth="2"
-                strokeLinecap="square"
-              >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="square">
                 <circle cx="12" cy="12" r="10" />
                 <path d="M12 8v8M8 12h8" />
               </svg>
             </div>
             <div>
-              <h1 className="text-sm font-semibold tracking-tight text-black leading-none">
-                OncoVision AI
-              </h1>
-              <p className="text-[11px] text-zinc-400 tracking-wide uppercase mt-0.5">
-                Histopathological Staging
-              </p>
+              <h1 className="text-sm font-semibold tracking-tight text-black leading-none">OncoVision AI</h1>
+              <p className="text-[11px] text-zinc-400 tracking-wide uppercase mt-0.5">Histopathological Staging</p>
             </div>
           </div>
 
           <div className="flex items-center gap-4">
-            <span className="text-[11px] font-mono text-zinc-400 tracking-wider uppercase">
-              Engine: Gemini 2.5 Flash
-            </span>
+            <button
+              onClick={() => { setShowHistory(!showHistory); if (!showHistory) fetchHistory(); }}
+              className="text-[11px] font-mono text-zinc-400 hover:text-black transition-colors uppercase tracking-wider border border-zinc-200 px-3 py-1.5 hover:border-zinc-400"
+              id="btn-history"
+            >
+              {showHistory ? "Close History" : "History"}
+            </button>
+            <span className="text-[11px] font-mono text-zinc-400 tracking-wider uppercase">Engine: Gemini 2.5 Flash</span>
             <div className="flex items-center gap-1.5">
               <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
@@ -234,6 +271,44 @@ export default function DiagnosticDashboard() {
           </div>
         </div>
       </header>
+
+      {/* ── History Panel ─────────────────────────────────────────────────────── */}
+      {showHistory && (
+        <div className="border-b border-zinc-200 bg-white animate-fade-in-up">
+          <div className="mx-auto max-w-6xl px-6 py-6">
+            <p className="text-[11px] text-zinc-400 uppercase tracking-[0.2em] mb-4">Recent Diagnoses</p>
+            {history.length === 0 ? (
+              <p className="text-xs text-zinc-400">No diagnoses recorded yet.</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {history.map((h) => (
+                  <div key={h.id} className="border border-zinc-200 p-4 flex flex-col gap-2 hover:border-zinc-400 transition-colors">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-black truncate max-w-[60%]">{h.prediction}</span>
+                      <span className={`text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 border ${h.risk_label.includes('Malignancy') || h.risk_label.includes('Suspicious') || h.risk_label.includes('Borderline') ? 'border-black text-black' : 'border-zinc-200 text-zinc-500'}`}>
+                        {h.risk_label}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-zinc-400 font-mono">{h.confidence}%</span>
+                      <span className="text-[10px] text-zinc-400 font-mono">{h.filename}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-zinc-400">{new Date(h.created_at).toLocaleString()}</span>
+                      <a
+                        href={`${API_URL}/report/${h.id}/pdf`}
+                        className="text-[10px] text-black font-medium underline underline-offset-2 hover:text-zinc-600"
+                      >
+                        PDF
+                      </a>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Main Content ───────────────────────────────────────────────────── */}
       <main className="flex-1 mx-auto max-w-6xl w-full px-6 py-10">
@@ -620,6 +695,22 @@ export default function DiagnosticDashboard() {
                       ⚠ This tool is an educational AI prototype. It is not a substitute for a qualified pathologist or clinical diagnosis.
                     </p>
                   </div>
+                )}
+
+                {/* Download PDF button */}
+                {diagnosis?.id && (
+                  <button
+                    onClick={downloadPdf}
+                    className="w-full py-3 text-xs font-semibold uppercase tracking-[0.2em] bg-black text-white hover:bg-zinc-900 active:scale-[0.99] transition-all duration-200 flex items-center justify-center gap-2"
+                    id="btn-download-pdf"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="square">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                    Download PDF Report
+                  </button>
                 )}
               </div>
             )}

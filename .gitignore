@@ -27,3 +27,6 @@ build/
 
 # Training data (large binary images, scraped locally)
 backend/training_data/
+
+# Database and uploads (local runtime data)
+backend/data/

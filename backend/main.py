@@ -8,15 +8,21 @@ import io
 import json
 import logging
 import math
+import os
+import uuid
 
 from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from google import genai
 from google.genai import types
 from PIL import Image
+
+from database import SessionLocal, DiagnosisRecord, UPLOAD_DIR
+from report import generate_pdf_report
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -82,6 +88,43 @@ MODEL_ID = "gemini-2.5-flash"
 # ---------------------------------------------------------------------------
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/tiff"}
 
+# ---------------------------------------------------------------------------
+# Deterministic Mathematical Confidence Calculation
+# ---------------------------------------------------------------------------
+
+def calculate_malignancy_probability(indicators: dict) -> float:
+    """Logistic regression log-odds model for malignancy probability."""
+    z = -3.0  # Baseline risk
+    if indicators.get("nc_ratio") == "High":
+        z += 3.0
+    if indicators.get("pleomorphism") == "Observed":
+        z += 2.0
+    if indicators.get("hyperchromasia") == "Detected":
+        z += 2.0
+    # Logistic function: P = 1 / (1 + e^-z)
+    return 1.0 / (1.0 + math.exp(-z))
+
+
+def get_risk_label(confidence: float, prob_malignant: float) -> str:
+    """Map confidence percentage to a clinical risk label."""
+    if prob_malignant < 0.5:
+        # Benign territory
+        if confidence >= 95:
+            return "Benign / Normal"
+        return "Atypical / Precancerous"
+    # Malignant territory
+    if confidence >= 98:
+        return "Definitive Malignancy"
+    if confidence >= 88:
+        return "Highly Suspicious"
+    if confidence >= 73:
+        return "Suspicious"
+    return "Borderline Cancerous"
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.get("/health")
 async def health_check():
@@ -94,6 +137,7 @@ async def predict(file: UploadFile = File(...)):
     """
     Accept a biopsy image upload, stream it through Gemini 2.5 Flash
     with the diagnostic system prompt, and return structured JSON.
+    Saves the result to the local SQLite database.
     """
 
     # --- Validate MIME type ---------------------------------------------------
@@ -170,35 +214,94 @@ async def predict(file: UploadFile = File(...)):
         )
 
     # --- Deterministic Mathematical Confidence Calculation --------------------
-    # Instead of relying on the LLM's arbitrary confidence score, we calculate a
-    # scientifically defensible probability using Logistic Regression log-odds.
-    
-    def calculate_malignancy_probability(indicators: dict) -> float:
-        z = -3.0  # Baseline risk
-        if indicators.get("nc_ratio") == "High":
-            z += 3.0
-        if indicators.get("pleomorphism") == "Observed":
-            z += 2.0
-        if indicators.get("hyperchromasia") == "Detected":
-            z += 2.0
-        
-        # Logistic function: P = 1 / (1 + e^-z)
-        return 1.0 / (1.0 + math.exp(-z))
-
     indicators = diagnosis.get("biological_indicators", {})
     prob_malignant = calculate_malignancy_probability(indicators)
-    
-    # If prob >= 0.5, the diagnosis is fundamentally malignant.
-    # We report confidence in the respective direction (Malignant vs Benign).
+
     if prob_malignant >= 0.5:
         final_confidence = prob_malignant
     else:
-        # If it's predicted as a benign condition, our confidence in it being benign
-        # is the inverse of the malignancy probability.
         final_confidence = 1.0 - prob_malignant
 
-    # Overwrite the LLM's hallucinated confidence with the deterministic mathematical value
-    # We round to 1 decimal place (e.g., 98.2) for precision.
-    diagnosis["confidence"] = round(final_confidence * 100, 1)
+    confidence_pct = round(final_confidence * 100, 1)
+    diagnosis["confidence"] = confidence_pct
+
+    # --- Risk label -----------------------------------------------------------
+    risk_label = get_risk_label(confidence_pct, prob_malignant)
+    diagnosis["risk_label"] = risk_label
+
+    # --- Save to database -----------------------------------------------------
+    record_id = str(uuid.uuid4())
+
+    # Save uploaded image to disk
+    ext = os.path.splitext(file.filename or "upload.jpg")[1] or ".jpg"
+    image_filename = f"{record_id}{ext}"
+    image_path = os.path.join(UPLOAD_DIR, image_filename)
+    with open(image_path, "wb") as f:
+        f.write(raw_bytes)
+
+    db = SessionLocal()
+    try:
+        record = DiagnosisRecord(
+            id=record_id,
+            filename=file.filename or "unknown",
+            image_path=image_path,
+            prediction=diagnosis["prediction"],
+            confidence=confidence_pct,
+            risk_label=risk_label,
+            biological_indicators=json.dumps(diagnosis["biological_indicators"]),
+            case_analysis=json.dumps(diagnosis["case_analysis"]),
+        )
+        db.add(record)
+        db.commit()
+        logger.info("Saved diagnosis %s to database.", record_id)
+    except Exception as exc:
+        db.rollback()
+        logger.error("Database save failed: %s", exc)
+    finally:
+        db.close()
+
+    # Include the record ID in the response so the frontend can request PDF/history
+    diagnosis["id"] = record_id
 
     return diagnosis
+
+
+@app.get("/history")
+async def get_history():
+    """Return the most recent 50 diagnostic records, newest first."""
+    db = SessionLocal()
+    try:
+        records = (
+            db.query(DiagnosisRecord)
+            .order_by(DiagnosisRecord.created_at.desc())
+            .limit(50)
+            .all()
+        )
+        return [r.to_dict() for r in records]
+    finally:
+        db.close()
+
+
+@app.get("/report/{record_id}/pdf")
+async def download_pdf(record_id: str):
+    """Generate and return a PDF diagnostic report for a given record."""
+    db = SessionLocal()
+    try:
+        record = db.query(DiagnosisRecord).filter_by(id=record_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="Record not found.")
+
+        record_dict = record.to_dict()
+        image_path = record.image_path
+
+        pdf_bytes = generate_pdf_report(record_dict, image_path)
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="OncoVision_Report_{record_id[:8]}.pdf"'
+            },
+        )
+    finally:
+        db.close()
