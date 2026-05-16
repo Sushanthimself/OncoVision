@@ -281,27 +281,211 @@ async def get_history():
     finally:
         db.close()
 
-
-@app.get("/report/{record_id}/pdf")
-async def download_pdf(record_id: str):
-    """Generate and return a PDF diagnostic report for a given record."""
+@app.get("/report/{record_id}/html")
+async def html_report(record_id: str):
+    """Generate and return a styled HTML diagnostic report."""
     db = SessionLocal()
     try:
         record = db.query(DiagnosisRecord).filter_by(id=record_id).first()
         if not record:
             raise HTTPException(status_code=404, detail="Record not found.")
 
-        record_dict = record.to_dict()
-        image_path = record.image_path
+        d = record.to_dict()
+        bio = d.get("biological_indicators", {})
+        case = d.get("case_analysis", {})
 
-        pdf_bytes = generate_pdf_report(record_dict, image_path)
+        # Build case analysis HTML
+        case_html = ""
+        for key in sorted(case.keys()):
+            if key == "8_classification_percentage":
+                continue
+            val = case[key]
+            label = " ".join(w.capitalize() for w in key.split("_")[1:])
+            case_html += f'<div class="case-item"><h4>{label}</h4><p>{val}</p></div>'
 
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="OncoVision_Report_{record_id[:8]}.pdf"'
-            },
-        )
+        # Inline image as base64 if available
+        img_html = ""
+        if record.image_path and os.path.exists(record.image_path):
+            import base64
+            ext = os.path.splitext(record.image_path)[1].lower()
+            mime = {"jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}.get(ext, "image/jpeg")
+            with open(record.image_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            img_html = f'<img src="data:{mime};base64,{b64}" alt="Biopsy" />'
+
+        def marker_class(val, active):
+            return "active" if val == active else ""
+
+        # Compute the math reasoning step-by-step
+        nc_val = bio.get("nc_ratio", "Normal")
+        pleo_val = bio.get("pleomorphism", "Not Observed")
+        hyper_val = bio.get("hyperchromasia", "Not Detected")
+
+        z_baseline = -3.0
+        nc_weight = 3.0 if nc_val == "High" else 0.0
+        pleo_weight = 2.0 if pleo_val == "Observed" else 0.0
+        hyper_weight = 2.0 if hyper_val == "Detected" else 0.0
+        z_total = z_baseline + nc_weight + pleo_weight + hyper_weight
+        prob_malignant = 1.0 / (1.0 + math.exp(-z_total))
+        prob_benign = 1.0 - prob_malignant
+        is_mal = prob_malignant >= 0.5
+        final_conf = prob_malignant if is_mal else prob_benign
+        direction = "Malignant" if is_mal else "Benign"
+
+        html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>OncoVision Report — {d['prediction']}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family:'Inter',system-ui,sans-serif; background:#fafafa; color:#18181b; padding:0; }}
+  .page {{ max-width:800px; margin:40px auto; background:#fff; border:1px solid #e4e4e7; }}
+  .header {{ padding:32px 40px; border-bottom:1px solid #e4e4e7; }}
+  .header h1 {{ font-size:22px; font-weight:700; letter-spacing:-0.5px; }}
+  .header p {{ font-size:12px; color:#71717a; margin-top:4px; }}
+  .meta {{ padding:20px 40px; border-bottom:1px solid #e4e4e7; display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }}
+  .meta-item span {{ display:block; font-size:10px; color:#a1a1aa; text-transform:uppercase; letter-spacing:1px; }}
+  .meta-item strong {{ font-size:13px; font-weight:500; }}
+  .section {{ padding:24px 40px; border-bottom:1px solid #e4e4e7; }}
+  .section-title {{ font-size:10px; color:#a1a1aa; text-transform:uppercase; letter-spacing:2px; margin-bottom:16px; font-weight:600; }}
+  .classification {{ display:flex; align-items:center; justify-content:space-between; }}
+  .prediction {{ font-size:24px; font-weight:600; }}
+  .badge {{ font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:1px; padding:4px 10px; border:1px solid #18181b; }}
+  .badge.benign {{ border-color:#d4d4d8; color:#71717a; }}
+  .conf-bar {{ height:4px; background:#f4f4f5; margin-top:16px; border-radius:2px; overflow:hidden; }}
+  .conf-fill {{ height:100%; background:#18181b; transition:width 0.5s; }}
+  .conf-label {{ display:flex; justify-content:space-between; margin-top:6px; font-size:11px; color:#a1a1aa; font-family:monospace; }}
+  img {{ max-width:320px; border:1px solid #e4e4e7; margin-top:8px; }}
+  .markers {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; }}
+  .marker {{ padding:16px; border:1px solid #e4e4e7; }}
+  .marker h4 {{ font-size:12px; font-weight:600; margin-bottom:4px; }}
+  .marker .desc {{ font-size:10px; color:#a1a1aa; }}
+  .marker .status {{ display:inline-block; margin-top:8px; font-size:11px; font-family:monospace; padding:2px 8px; border:1px solid #e4e4e7; color:#a1a1aa; }}
+  .marker .status.active {{ border-color:#18181b; color:#18181b; background:#fafafa; font-weight:600; }}
+  .case-item {{ margin-bottom:16px; padding-left:16px; border-left:2px solid #e4e4e7; }}
+  .case-item h4 {{ font-size:11px; color:#71717a; text-transform:uppercase; letter-spacing:1px; font-weight:500; margin-bottom:4px; }}
+  .case-item p {{ font-size:13px; line-height:1.6; color:#3f3f46; }}
+  .disclaimer {{ padding:24px 40px; background:#fafafa; font-size:11px; color:#a1a1aa; line-height:1.5; }}
+  @media print {{
+    body {{ background:#fff; }}
+    .page {{ border:none; margin:0; box-shadow:none; }}
+    .no-print {{ display:none; }}
+  }}
+  .print-btn {{ position:fixed; bottom:24px; right:24px; background:#18181b; color:#fff; border:none; padding:12px 24px; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:1px; cursor:pointer; font-family:'Inter',sans-serif; }}
+  .print-btn:hover {{ background:#3f3f46; }}
+  .math-section {{ background:#fafafa; }}
+  .formula {{ font-family:'Courier New',monospace; background:#f4f4f5; padding:16px 20px; border:1px solid #e4e4e7; margin:12px 0; font-size:13px; line-height:1.8; overflow-x:auto; }}
+  .formula .highlight {{ color:#18181b; font-weight:700; }}
+  .formula .dim {{ color:#a1a1aa; }}
+  .step-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:12px 0; }}
+  .step-card {{ padding:14px 16px; border:1px solid #e4e4e7; background:#fff; }}
+  .step-card .label {{ font-size:10px; color:#a1a1aa; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px; }}
+  .step-card .value {{ font-size:18px; font-weight:600; font-family:'Courier New',monospace; }}
+  .step-card .note {{ font-size:11px; color:#71717a; margin-top:4px; }}
+  .arrow {{ text-align:center; font-size:20px; color:#a1a1aa; padding:8px 0; }}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="header">
+    <h1>OncoVision AI</h1>
+    <p>Histopathological Diagnostic Report · Generated {__import__('datetime').datetime.now().strftime('%B %d, %Y at %H:%M')}</p>
+  </div>
+  <div class="meta">
+    <div class="meta-item"><span>Report ID</span><strong>{d['id'][:8]}</strong></div>
+    <div class="meta-item"><span>Original File</span><strong>{d['filename']}</strong></div>
+    <div class="meta-item"><span>Analysis Date</span><strong>{str(d.get('created_at',''))[:19].replace('T',' ')}</strong></div>
+  </div>
+  <div class="section">
+    <div class="section-title">Classification</div>
+    <div class="classification">
+      <span class="prediction">{d['prediction']}</span>
+      <span class="badge {'benign' if 'Benign' in d.get('risk_label','') else ''}">{d.get('risk_label','N/A')}</span>
+    </div>
+    <div class="conf-bar"><div class="conf-fill" style="width:{d['confidence']}%"></div></div>
+    <div class="conf-label"><span>0%</span><span>{d['confidence']}%</span><span>100%</span></div>
+  </div>
+  {'<div class="section"><div class="section-title">Biopsy Image</div>' + img_html + '</div>' if img_html else ''}
+  <div class="section">
+    <div class="section-title">Morphological Biomarkers</div>
+    <div class="markers">
+      <div class="marker">
+        <h4>N:C Ratio</h4>
+        <div class="desc">Nuclear-to-cytoplasmic ratio</div>
+        <span class="status {marker_class(bio.get('nc_ratio',''), 'High')}">{bio.get('nc_ratio','N/A')}</span>
+      </div>
+      <div class="marker">
+        <h4>Pleomorphism</h4>
+        <div class="desc">Cellular irregularity</div>
+        <span class="status {marker_class(bio.get('pleomorphism',''), 'Observed')}">{bio.get('pleomorphism','N/A')}</span>
+      </div>
+      <div class="marker">
+        <h4>Hyperchromasia</h4>
+        <div class="desc">Dense chromatin packing</div>
+        <span class="status {marker_class(bio.get('hyperchromasia',''), 'Detected')}">{bio.get('hyperchromasia','N/A')}</span>
+      </div>
+    </div>
+  </div>
+  <div class="section math-section">
+    <div class="section-title">Mathematical Reasoning — Logistic Regression</div>
+    <p style="font-size:12px;color:#71717a;margin-bottom:16px;">Instead of relying on the AI's arbitrary confidence score, we calculate a deterministic probability using the Logistic Regression log-odds model based on the detected biomarkers.</p>
+
+    <div class="formula">
+      <span class="dim">Step 1: Calculate log-odds (z)</span><br/>
+      z = <span class="highlight">-3.0</span> <span class="dim">(baseline risk)</span><br/>
+      &nbsp;&nbsp;+ <span class="highlight">{'+3.0' if nc_weight > 0 else '+0.0'}</span> <span class="dim">(N:C Ratio = {nc_val}{' → abnormal' if nc_weight > 0 else ' → normal'})</span><br/>
+      &nbsp;&nbsp;+ <span class="highlight">{'+2.0' if pleo_weight > 0 else '+0.0'}</span> <span class="dim">(Pleomorphism = {pleo_val}{' → abnormal' if pleo_weight > 0 else ' → normal'})</span><br/>
+      &nbsp;&nbsp;+ <span class="highlight">{'+2.0' if hyper_weight > 0 else '+0.0'}</span> <span class="dim">(Hyperchromasia = {hyper_val}{' → abnormal' if hyper_weight > 0 else ' → normal'})</span><br/>
+      <br/>
+      z = <span class="highlight">{z_total}</span>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <div class="formula">
+      <span class="dim">Step 2: Apply Logistic (Sigmoid) Function</span><br/>
+      P(Malignant) = 1 / (1 + e<sup>-z</sup>)<br/>
+      P(Malignant) = 1 / (1 + e<sup>-({z_total})</sup>)<br/>
+      P(Malignant) = 1 / (1 + {math.exp(-z_total):.6f})<br/>
+      <span class="highlight">P(Malignant) = {prob_malignant:.4f} ({prob_malignant*100:.1f}%)</span>
+    </div>
+
+    <div class="arrow">↓</div>
+
+    <div class="step-grid">
+      <div class="step-card">
+        <div class="label">Probability of Malignancy</div>
+        <div class="value">{prob_malignant*100:.1f}%</div>
+        <div class="note">{'Above 50% threshold → classified as malignant' if is_mal else 'Below 50% threshold → classified as benign'}</div>
+      </div>
+      <div class="step-card">
+        <div class="label">Probability of Benign</div>
+        <div class="value">{prob_benign*100:.1f}%</div>
+        <div class="note">P(Benign) = 1 - P(Malignant)</div>
+      </div>
+    </div>
+
+    <div class="formula">
+      <span class="dim">Step 3: Final Confidence</span><br/>
+      Direction: <span class="highlight">{direction}</span> (P(Malignant) {'≥' if is_mal else '<'} 0.5)<br/>
+      Reported Confidence = P({direction}) = <span class="highlight">{final_conf*100:.1f}%</span>
+    </div>
+  </div>
+  <div class="section">
+    <div class="section-title">Case Analysis</div>
+    {case_html}
+  </div>
+  <div class="disclaimer">
+    ⚠ This report was generated by OncoVision AI, an educational prototype. It is not a substitute for a qualified pathologist or clinical diagnosis. All findings must be verified by a licensed medical professional.<br/><br/>
+    OncoVision AI v1.0 · Gemini 2.5 Flash · Logistic Regression Confidence Model
+  </div>
+</div>
+<button class="print-btn no-print" onclick="window.print()">⬇ Save as PDF</button>
+</body>
+</html>"""
+
+        return Response(content=html, media_type="text/html")
     finally:
         db.close()
