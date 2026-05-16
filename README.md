@@ -8,23 +8,14 @@ Automated cancer cell detection and histopathological staging platform powered b
 
 ## Architecture
 
-```
-                                  ┌─────────────────────┐
-                                  │   Gemini 2.5 Flash   │
-                                  │  (Visual Inference)   │
-                                  └─────────┬─────────────┘
-                                            │ Structured JSON
-                                            ▼
-┌──────────────┐  Multipart POST  ┌─────────────────────┐             ┌──────────┐
-│   Next.js    │ ───────────────▶ │   FastAPI Backend    │ ──────────▶ │  SQLite  │
-│   Frontend   │ ◀─────────────── │   + Logistic Reg.    │             │ Database │
-└──────────────┘  Diagnosis JSON  └─────────┬─────────────┘             └──────────┘
-                                            │
-                                            ▼
-                                  ┌─────────────────────┐
-                                  │   HTML Report Page    │
-                                  │  (with math breakdown)│
-                                  └───────────────────────┘
+```mermaid
+flowchart TD
+    A["Next.js Frontend"] -->|"Multipart POST"| B["FastAPI Backend + Logistic Regression"]
+    B -->|"Image + Prompt"| C["Gemini 2.5 Flash"]
+    C -->|"Structured JSON"| B
+    B -->|"Diagnosis JSON"| A
+    B -->|"Save Record"| D["SQLite Database"]
+    B -->|"Generate"| E["HTML Report Page (with math breakdown)"]
 ```
 
 ## Features
