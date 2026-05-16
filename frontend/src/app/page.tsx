@@ -20,10 +20,13 @@ interface CaseAnalysis {
   "4_provisional_diagnosis": string;
   "5_treatment_planning": string;
   "6_potential_complications": string;
+  "7_transformation_probability"?: string;
+  "8_classification_percentage"?: string;
+  [key: string]: string | undefined;
 }
 
 interface DiagnosisResult {
-  prediction: "Malignant" | "Benign" | "Atypical / Borderline";
+  prediction: string;
   confidence: number;
   biological_indicators: BiologicalIndicators;
   case_analysis: CaseAnalysis;
@@ -117,15 +120,28 @@ export default function DiagnosticDashboard() {
   }, [selectedFile]);
 
   /* derived ---------------------------------------------------------------- */
-  const confidencePct = diagnosis
-    ? Math.round(diagnosis.confidence * 100)
-    : 0;
+  // Gemini may return confidence as 0-1 (e.g. 0.98) or 0-100 (e.g. 98).
+  // Auto-detect: if the value is > 1, treat it as already a percentage.
+  const rawConf = diagnosis?.confidence ?? 0;
+  const confidencePct = rawConf > 1 ? Math.round(rawConf) : Math.round(rawConf * 100);
 
-  const isMalignant = diagnosis?.prediction === "Malignant";
+  // Gemini returns specific condition names (e.g. "Invasive Ductal Carcinoma")
+  // not generic "Malignant"/"Benign" labels. Detect malignancy from the
+  // biomarker signals: if at least 2 of 3 are abnormal, it is likely malignant.
+  const detectMalignancy = (d: DiagnosisResult): boolean => {
+    let abnormalCount = 0;
+    if (d.biological_indicators.nc_ratio === "High") abnormalCount++;
+    if (d.biological_indicators.pleomorphism === "Observed") abnormalCount++;
+    if (d.biological_indicators.hyperchromasia === "Detected") abnormalCount++;
+    return abnormalCount >= 2;
+  };
+
+  const isMalignant = diagnosis ? detectMalignancy(diagnosis) : false;
 
   /* layman summary --------------------------------------------------------- */
   const getLaymanSummary = (d: DiagnosisResult): { headline: string; bullets: string[] } => {
-    const isMal = d.prediction === "Malignant";
+    const isMal = detectMalignancy(d);
+    const confValue = d.confidence > 1 ? Math.round(d.confidence) : Math.round(d.confidence * 100);
     const bullets: string[] = [];
 
     // N:C ratio
@@ -150,8 +166,8 @@ export default function DiagnosticDashboard() {
     }
 
     const headline = isMal
-      ? `The AI detected signs consistent with malignancy (cancer) with ${Math.round(d.confidence * 100)}% confidence. This means the cells show abnormal behaviour that warrants further clinical investigation.`
-      : `The AI found no significant signs of cancer with ${Math.round(d.confidence * 100)}% confidence. The tissue appears to be behaving normally based on the three markers examined.`;
+      ? `The AI detected signs consistent with ${d.prediction} with ${confValue}% confidence. The cells show abnormal behaviour that warrants further clinical investigation.`
+      : `The AI found no significant signs of malignancy with ${confValue}% confidence. The tissue classified as "${d.prediction}" appears to be behaving normally based on the three markers examined.`;
 
     return { headline, bullets };
   };
@@ -527,7 +543,10 @@ export default function DiagnosticDashboard() {
                     Case Analysis
                   </p>
                   <div className="flex flex-col gap-4">
-                    {Object.entries(diagnosis.case_analysis).sort().map(([key, value]) => {
+                    {Object.entries(diagnosis.case_analysis)
+                      .filter(([key]) => key !== "8_classification_percentage")
+                      .sort()
+                      .map(([key, value]) => {
                       // Clean up the key name for display (e.g., "0_pathogenesis" -> "Pathogenesis")
                       const label = key.split('_').slice(1).map(word => 
                         word.charAt(0).toUpperCase() + word.slice(1)

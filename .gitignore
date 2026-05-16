@@ -24,3 +24,6 @@ build/
 
 # Logs
 *.log
+
+# Training data (large binary images, scraped locally)
+backend/training_data/
